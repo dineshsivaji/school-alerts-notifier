@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import random
 import requests
 from typing import Optional, Dict, Any
 
@@ -8,9 +9,10 @@ from typing import Optional, Dict, Any
 BAILEYS_URL = os.getenv("BAILEYS_URL", "http://localhost:3001/send")
 EDUMERGE_USERID = os.getenv("EDUMERGE_USERID")
 EDUMERGE_PASSWORD = os.getenv("EDUMERGE_PASSWORD")
+BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "3600"))  # Default baseline: 1 hour
 
-# Persistent state file configuration on your mini PC storage layout
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_processed_msg.json")
+# Location of tracking file relative to execution path
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),"data","last_processed_msg.json")
 
 
 class EdumergeScraper:
@@ -115,7 +117,6 @@ class EdumergeScraper:
         view_event_url = 'https://app.edumerge.com/V2/noticecalendar/server/view_event.php'
         headers = {'accept': 'application/json'}
         payload = {"id": msg_id, "react_check": True}
-
         response = self.session.post(view_event_url, headers=headers, json=payload)
         return response.json()
 
@@ -138,7 +139,7 @@ class EdumergeScraper:
         )
 
     @staticmethod
-    def broadcast_via_baileys(message_text: str) -> bool:
+    def broadcast_via_baileys(message_text: str) -> None:
         """Dispatches an HTTP JSON POST payload stream to the local Baileys engine daemon."""
         payload = {"message": message_text}
         try:
@@ -146,12 +147,10 @@ class EdumergeScraper:
             res = requests.post(BAILEYS_URL, json=payload, timeout=10)
             if res.status_code == 200:
                 print("✅ Success! Notice successfully broadcasted to your family WhatsApp group.")
-                return True
             else:
                 print(f"⚠️ Gateway rejected message stream. Status: {res.status_code}, Context: {res.text}")
         except requests.exceptions.RequestException as e:
             print(f"❌ Communication pipeline failure reaching Baileys microservice on {BAILEYS_URL}: {e}")
-        return False
 
     def logout(self) -> None:
         """Step 6: Execute modular multipart disconnection cleanup sequence."""
@@ -184,17 +183,16 @@ class EdumergeScraper:
 
 
 # -------------------------------------------------------------------------
-# PERSISTENT LOCAL STATE HELPER FUNCTIONS
+# PERSISTENT LOCAL STORAGE TRACKING OPERATIONS
 # -------------------------------------------------------------------------
 def get_last_processed_id() -> Optional[int]:
-    """Reads the last broadcasted message ID from local storage profile."""
+    """Reads the last broadcasted message ID from local storage profile folder mount."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
-                state = json.load(f)
-                return state.get("last_msg_id")
+                return json.load(f).get("last_msg_id")
         except (json.JSONDecodeError, IOError):
-            print("⚠️ Warning: State file corrupted or unreadable. Treating as first-time execution.")
+            print("⚠️ Warning: State file unreadable. Treating as fresh run.")
     return None
 
 
@@ -203,53 +201,94 @@ def save_last_processed_id(msg_id: int) -> None:
     try:
         with open(STATE_FILE, "w") as f:
             json.dump({"last_msg_id": msg_id, "updated_at": time.time()}, f, indent=2)
-        print(f"-> State updated. Token saved: {msg_id}")
+        print(f"-> Local pipeline history state synchronized with ID token: {msg_id}")
     except IOError as e:
         print(f"❌ Failed to commit state verification parameters to disk: {e}")
 
 
 # -------------------------------------------------------------------------
-# EXECUTION LIFECYCLE
+# CORE EXECUTION PIPELINE UNIT
 # -------------------------------------------------------------------------
-if __name__ == "__main__":
+def run_pipeline() -> None:
+    """Instantiates a localized transaction lifecycle frame to run the handshake audit."""
+    print(f"\n🔄 [{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching automated audit pass...")
     scraper = EdumergeScraper()
     try:
         scraper.login()
         scraper.initialize_dashboard_context()
-
-        print("\nWaiting 5s before navigating tabs...")
-        time.sleep(5)
+        time.sleep(2)
 
         latest_notice = scraper.fetch_latest_feed_notice()
-
         if latest_notice and latest_notice.get('msgid'):
             notice_id = int(latest_notice['msgid'])
             last_seen_id = get_last_processed_id()
 
-            print(f"\n-> Evaluation Engine: Current App Notice ID={notice_id} | Last Notified ID={last_seen_id}")
+            print(f"-> State Check: Incoming Notice ID={notice_id} | Dispatched History ID={last_seen_id}")
 
-            # State Gate check: Stop right here if this announcement was already broadcasted
             if last_seen_id == notice_id:
-                print(
-                    "🛑 Notice ID matches history logs. WhatsApp alert already dispatched previously. Exiting pipeline.")
+                print("🛑 Notice ID matches local database history. Already dispatched. Exiting cleanly.")
             else:
-                print("\n✨ New notice discovered! Waiting 5s before processing view event...")
-                time.sleep(5)
-
-                print(f"-> Extracting details for Notice ID: {notice_id}")
+                print("✨ New notification discovered! Processing detailed structural views context...")
+                time.sleep(2)
                 event_details = scraper.fetch_notice_event_details(notice_id)
                 formatted_alert = scraper.format_whatsapp_markdown(event_details)
 
-                # Fire to the WhatsApp server
-                if scraper.broadcast_via_baileys(formatted_alert):
-                    # Update our state file so we never send this ID again
-                    save_last_processed_id(notice_id)
+                # Dispatch payload out to Baileys Engine
+                scraper.broadcast_via_baileys(formatted_alert)
+                save_last_processed_id(notice_id)
         else:
-            print("⚠️ Warning: No valid notice data structures encountered in current feed block.")
+            print("⚠️ Warning: No valid notice layout blocks present in response frame data.")
 
-    except Exception as run_error:
-        print(f"❌ Automation pipeline runtime failure encountered: {run_error}")
+    except Exception as err:
+        print(f"❌ Automation pipeline tracking flow breakdown encountered: {err}")
     finally:
-        print("\nCooling down thread architecture before session cleanup verification...")
-        time.sleep(30)
-        scraper.logout()
+        try:
+            scraper.logout()
+            print("-> Session authentication fingerprints torn down.")
+        except Exception:
+            pass
+
+
+# -------------------------------------------------------------------------
+# INITIALIZATION RUNTIME CONTROL ENGINE
+# -------------------------------------------------------------------------
+if __name__ == "__main__":
+    print("🚀 Edumerge adaptive polling service successfully deployed inside Docker environment...")
+
+    while True:
+        # 1. Inspect local clock time vector for night-mode gate constraints
+        current_hour = time.localtime().tm_hour
+
+        # Check window: 10:00 PM (22) through 6:00 AM (inclusive of hour 5)
+        if current_hour >= 22 or current_hour < 6:
+            if current_hour >= 22:
+                hours_to_wait = (24 - current_hour) + 6  # Remaining hours to midnight + 6 hours
+            else:
+                hours_to_wait = 6 - current_hour  # Direct subtract if already past midnight
+
+            sleep_duration = hours_to_wait * 3600
+            wake_time = time.strftime('%I:%M %p', time.localtime(time.time() + sleep_duration))
+
+            print(f"🌙 Night-mode active (Current Hour: {current_hour}). Silencing background scrapers.")
+            print(f"💤 Suspending thread into deep sleep for {hours_to_wait} hours. Waking up at: {wake_time}")
+
+            time.sleep(sleep_duration)
+            continue  # Shunts processing cycle immediately back to hour evaluations post sleep
+
+        # 2. Run standard processing pipeline within waking hours
+        run_pipeline()
+
+        # 3. Add variable humanized Jitter matrix (Adds between -10 mins and +15 mins to baseline)
+        jitter = random.randint(-600, 900)
+        next_sleep_interval = BASE_INTERVAL_SECONDS + jitter
+
+        # Logging diagnostics formatting
+        sleep_minutes_metric = round(next_sleep_interval / 60, 1)
+        target_wake_timestamp = time.strftime('%I:%M:%S %p', time.localtime(time.time() + next_sleep_interval))
+
+        print(
+            f"💤 Variable sleep window activated: Sleeping for {sleep_minutes_metric} minutes ({next_sleep_interval}s).")
+        print(f"⏰ Next evaluation pass is scheduled to execute at approx: {target_wake_timestamp}")
+
+        # 4. Suspend execution flow
+        time.sleep(next_sleep_interval)
