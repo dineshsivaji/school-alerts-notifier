@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Service A: The persistent Node.js WhatsApp daemon
+  whatsapp-bridge:
+    build: ./whatsapp-bridge
+    container_name: whatsapp-bridge
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file: .env
+    volumes:
+      # Keeps your WhatsApp QR login session alive across restarts
+      - whatsapp_session:/app/auth
+
+  # Service B: The scheduled Python extraction client
+  python-scraper:
+    build: ./python-scraper
+    container_name: python-scraper
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - whatsapp-bridge
+    volumes:
+      # Keeps your last_processed_msg.json state file safe on your disk
+      - scraper_state:/app
+
+volumes:
+  whatsapp_session:
+  scraper_state:
