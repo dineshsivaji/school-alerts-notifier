@@ -2,13 +2,15 @@ import os
 import json
 import time
 import random
-import requests
-import html
+import io
 import re
-from typing import Optional, Dict, Any, List
+import html
+from html.parser import HTMLParser
+import requests
+from typing import Optional, Dict, Any, List, Tuple
 
 # Configuration Defaults
-BAILEYS_URL = os.getenv("BAILEYS_URL", "http://localhost:3001/send")
+BAILEYS_URL = os.getenv("BAILEYS_URL", "http://localhost:3001")
 BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "3600"))  # Default baseline: 1 hour
 
 # Location of tracking file relative to execution path
@@ -16,23 +18,13 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "l
 
 
 # -------------------------------------------------------------------------
-# MULTI-ACCOUNT CREDENTIALS CONFIGURATION
+# MULTI-ACCOUNT CREDENTIALS CONFIGURATION MATRIX
 # -------------------------------------------------------------------------
 def load_student_accounts() -> List[Dict[str, str]]:
     """
-    Parses credentials for multiple students.
-    Can read from a JSON environment variable or look for individual env blocks.
+    Parses isolated credentials for multiple students using Option A format.
+    Looks for sequential individual environment blocks.
     """
-    # Prefer a structured JSON array string from env for ultimate flexibility:
-    # EDUMERGE_ACCOUNTS='[{"name": "Vennila", "user": "user1", "pass": "pass1"}, {"name": "Surya", "user": "user2", "pass": "pass2"}]'
-    accounts_json = os.getenv("EDUMERGE_ACCOUNTS")
-    if accounts_json:
-        try:
-            return json.loads(accounts_json)
-        except Exception as e:
-            print(f"❌ Failed to parse EDUMERGE_ACCOUNTS JSON env: {e}")
-
-    # Fallback to explicit single env variables or defaults if JSON isn't configured yet
     return [
         {
             "name": os.getenv("STUDENT_1_NAME", "Vennila"),
@@ -47,12 +39,74 @@ def load_student_accounts() -> List[Dict[str, str]]:
     ]
 
 
+# -------------------------------------------------------------------------
+# NATIVE ADAPTIVE HTML TO MARKDOWN PARSING ENGINE
+# -------------------------------------------------------------------------
+class EdumergeHTMLParser(HTMLParser):
+    """Parses raw school HTML notice pages into WhatsApp Markdown and isolates file attachments."""
+
+    def __init__(self):
+        super().__init__()
+        self.text_chunks: List[str] = []
+        self.attachment_urls: List[str] = []
+        self.in_bold = False
+        self.current_link_url = None
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, str]]) -> None:
+        attr_dict = dict(attrs)
+
+        if tag in ['strong', 'b', 'u']:
+            self.in_bold = True
+            self.text_chunks.append("*")
+        elif tag in ['br', 'p', 'tr']:
+            self.text_chunks.append("\n")
+        elif tag == 'div':
+            if self.text_chunks and not self.text_chunks[-1].endswith("\n"):
+                self.text_chunks.append("\n")
+        elif tag == 'a':
+            href = attr_dict.get('href', '')
+            if href:
+                # Differentiate physical documents from standard informational website links
+                if any(href.lower().endswith(ext) for ext in ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx']):
+                    self.attachment_urls.append(href)
+                else:
+                    self.current_link_url = href
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ['strong', 'b', 'u']:
+            self.in_bold = False
+            if self.text_chunks and self.text_chunks[-1] == " ":
+                self.text_chunks.pop()
+                self.text_chunks.append("* ")
+            else:
+                self.text_chunks.append("*")
+        elif tag == 'a':
+            if self.current_link_url:
+                self.text_chunks.append(f" ({self.current_link_url}) ")
+                self.current_link_url = None
+
+    def handle_data(self, data: str) -> None:
+        clean_data = html.unescape(data)
+        if clean_data.strip() or " " in clean_data:
+            self.text_chunks.append(clean_data)
+
+    def get_clean_payload(self) -> Tuple[str, List[str]]:
+        """Returns the fully compiled markdown text body along with discovered download URLs."""
+        raw_text = "".join(self.text_chunks)
+        # Normalize redundant space structures and line break fragments
+        text_with_normalized_breaks = re.sub(r'\n\s*\n+', '\n\n', raw_text)
+        return text_with_normalized_breaks.strip(), self.attachment_urls
+
+
+# -------------------------------------------------------------------------
+# STATEFUL EDUMERGE SCRAPER ENGINE
+# -------------------------------------------------------------------------
 class EdumergeScraper:
     """An encapsulated stateful scraper client for a specific Edumerge student account lifecycle."""
 
     def __init__(self, username: str, password: str, display_name: str) -> None:
         if not username or not password:
-            raise ValueError(f"CRITICAL: Credentials missing for student student: {display_name}")
+            raise ValueError(f"CRITICAL: Credentials missing for student profile: {display_name}")
 
         self.username = username
         self.password = password
@@ -65,7 +119,6 @@ class EdumergeScraper:
             'Accept-Encoding': 'gzip'
         })
 
-        # State tracking store for authentication session dependencies
         self.session_ctx: Dict[str, Any] = {}
 
     def login(self) -> bool:
@@ -89,7 +142,7 @@ class EdumergeScraper:
             data = response.json()
 
             if not data.get('emuniqueid'):
-                print(f"   ❌ Login failed for {self.display_name}: Invalid response schema.")
+                print(f"   ❌ Login failed for {self.display_name}: Invalid response frame schema.")
                 return False
 
             self.session_ctx.update({
@@ -100,10 +153,10 @@ class EdumergeScraper:
                 'emidinfo_str': data.get('emidinfo'),
                 'userid': self.username
             })
-            print(f"   -> Success. EMUniqueId secured.")
+            print(f"   -> Success. Session authenticated cleanly.")
             return True
         except Exception as e:
-            print(f"   ❌ Exception during login for {self.display_name}: {e}")
+            print(f"   ❌ Exception during login phase for {self.display_name}: {e}")
             return False
 
     def initialize_dashboard_context(self) -> None:
@@ -116,7 +169,7 @@ class EdumergeScraper:
 
         try:
             profiles = populate_res.json()
-            print(f"   -> Primary Profile: {profiles[0].get('text') if profiles else 'Unknown'}")
+            print(f"   -> Primary Server Profile: {profiles[0].get('text') if profiles else 'Unknown'}")
         except Exception:
             pass
 
@@ -165,52 +218,70 @@ class EdumergeScraper:
         response = self.session.post(view_event_url, headers=headers, json=payload)
         return response.json()
 
-    def format_whatsapp_markdown(self, event_data: Dict[str, Any]) -> str:
-        """Parses internal HTML text line structures into high-readability markdown flags."""
+    def parse_and_format_content(self, event_data: Dict[str, Any]) -> Tuple[str, List[str]]:
+        """Leverages native parser mechanics to return clean markdown text and download targets."""
         title = event_data.get("mtitle", "New School Notice").strip()
         raw_body = event_data.get("msgbody", "")
         date_sent = event_data.get("content_date", {}).get("full_date", "Recently")
 
-        # 1. Convert explicit line breaks
-        clean_body = raw_body.replace("<br/>", "\n").replace("<br>", "\n").replace("<br />", "\n")
+        # Execute our structured parsing workflow
+        parser = EdumergeHTMLParser()
+        parser.feed(raw_body)
+        clean_body, attachments = parser.get_clean_payload()
 
-        # 2. Handle paragraphs: replace closing tags with a newline, strip opening tags
-        clean_body = clean_body.replace("</p>", "\n").replace("<p>", "")
-
-        # 3. Convert HTML bold tags to WhatsApp markdown stars (*text*)
-        clean_body = clean_body.replace("<strong>", "*").replace("</strong>", "*")
-        clean_body = clean_body.replace("<b>", "*").replace("</b>", "*")
-
-        # 4. Strip any remaining rogue HTML tags (like <span>, <div> etc. if they pop up)
-        clean_body = re.sub(r'<[^>]+>', '', clean_body)
-
-        # 5. Decode HTML entities (converts &nbsp; to spaces, &amp; to &, etc.)
-        clean_body = html.unescape(clean_body)
-
-        # 6. Normalize list bullets and clean up trailing whitespace
+        # Strip out loose web anomalies if present
         clean_body = clean_body.replace("\u2022", "• ")
-        clean_body = clean_body.strip()
 
-        return (
+        formatted_text = (
             f"🏫 *SCHOOL NOTICE ALERT ({self.display_name.upper()})*\n"
             f"📅 *Posted:* {date_sent}\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
             f"📌 *Subject:* {title}\n\n"
             f"{clean_body}"
         )
+        return formatted_text, attachments
 
     @staticmethod
     def broadcast_via_baileys(message_text: str) -> None:
-        """Dispatches an HTTP JSON POST payload stream to the local Baileys engine daemon."""
+        """Dispatches an HTTP JSON POST payload text stream to the standard text endpoint."""
+        url = f"{BAILEYS_URL}/send"
         payload = {"message": message_text}
         try:
-            res = requests.post(BAILEYS_URL, json=payload, timeout=10)
+            res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
-                print("   ✅ Success! Notice successfully broadcasted via Baileys.")
+                print("   ✅ Success! Text notice broadcasted successfully via Baileys.")
             else:
-                print(f"   ⚠️ Gateway rejected message stream. Status: {res.status_code}")
+                print(f"   ⚠️ Text gateway rejected transmission payload. Status: {res.status_code}")
         except requests.exceptions.RequestException as e:
-            print(f"   ❌ Communication pipeline failure reaching Baileys: {e}")
+            print(f"   ❌ Communication pipeline failure reaching standard Baileys text endpoint: {e}")
+
+    def process_and_send_attachments(self, attachment_urls: List[str]) -> None:
+        """Downloads files securely into memory RAM buffers and pipes them to the Baileys multi-part engine."""
+        media_url = f"{BAILEYS_URL}/media"
+
+        for url in attachment_urls:
+            filename = url.split('/')[-1]
+            print(f"   📥 Downloading notice attachment from school portal: {filename}...")
+
+            try:
+                # Fetch asset stream keeping parameters coupled inside the current child's auth session
+                file_res = self.session.get(url, timeout=30)
+                if file_res.status_code == 200:
+                    file_buffer = io.BytesIO(file_res.content)
+                    print(f"   📤 Relaying attachment binary stream out to Baileys Multipart Engine...")
+
+                    # Prepare multipart form payload targeting the multer endpoint configuration
+                    files = {'file': (filename, file_buffer, 'application/pdf')}
+                    media_res = requests.post(media_url, files=files, timeout=20)
+
+                    if media_res.status_code == 200:
+                        print(f"   ✅ Attachment [{filename}] successfully posted to family group channel.")
+                    else:
+                        print(f"   ⚠️ Media gateway rejected file packet framework. Status: {media_res.status_code}")
+                else:
+                    print(f"   ⚠️ Attachment asset download returned failure status code: {file_res.status_code}")
+            except Exception as e:
+                print(f"   ❌ Failed to successfully execute automated attachment routing pipeline loop: {e}")
 
     def logout(self) -> None:
         """Step 6: Execute modular multipart disconnection cleanup sequence."""
@@ -240,7 +311,7 @@ class EdumergeScraper:
         }
         try:
             self.session.post(url, files=multipart_payload)
-            print(f"   -> Session torn down for {self.display_name}.")
+            print(f"   -> Session authentication footprints torn down cleanly for {self.display_name}.")
         except Exception:
             pass
 
@@ -249,21 +320,21 @@ class EdumergeScraper:
 # PERSISTENT LOCAL STORAGE TRACKING OPERATIONS
 # -------------------------------------------------------------------------
 def load_all_processed_states() -> Dict[str, Any]:
-    """Reads historical tracking cursor keys mapped by unique student labels."""
+    """Reads historical tracking cursors from disk mapped by unique child names."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 saved_data = json.load(f)
                 if "last_msg_id" in saved_data:
-                    return {}  # Wipe obsolete unified state formats smoothly
+                    return {}  # Erase obsolete single-student schemas safely
                 return saved_data
         except (json.JSONDecodeError, IOError):
-            print("⚠️ Warning: State file structure unreadable. Resetting boundaries.")
+            print("⚠️ Warning: State tracker file corrupted or unreadable. Initializing default baseline map.")
     return {}
 
 
 def save_student_processed_id(student_key: str, msg_id: int) -> None:
-    """Commits tracking status keys isolated per student back to the volume file storage."""
+    """Commits tracking status keys isolated precisely per child back to volume file storage."""
     current_states = load_all_processed_states()
     current_states[student_key] = msg_id
     current_states["_updated_at"] = time.time()
@@ -272,17 +343,17 @@ def save_student_processed_id(student_key: str, msg_id: int) -> None:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         with open(STATE_FILE, "w") as f:
             json.dump(current_states, f, indent=2)
-        print(f"   -> Tracking synchronized for [{student_key}] with ID token: {msg_id}")
+        print(f"   -> Disk cursor tracking synchronized for [{student_key}] up to ID token: {msg_id}")
     except IOError as e:
-        print(f"❌ Failed to commit state verification parameters to disk: {e}")
+        print(f"❌ Failed to commit updated historical tracking criteria state parameters to disk: {e}")
 
 
 # -------------------------------------------------------------------------
-# CORE EXECUTION PIPELINE UNIT
+# CORE RUNTIME TRANSACTION EXECUTION LIFECYCLE
 # -------------------------------------------------------------------------
 def run_pipeline() -> None:
-    """Instantiates sequentially mapped execution loops across all individual student accounts."""
-    print(f"\n🔄 [{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching automated multi-account verification pass...")
+    """Instantiates sequentially mapped execution loops across all active child accounts."""
+    print(f"\n🔄 [{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching automated account audit pass...")
 
     student_accounts = load_student_accounts()
     tracking_history = load_all_processed_states()
@@ -293,7 +364,7 @@ def run_pipeline() -> None:
         password = account.get("pass")
 
         if not username or not password:
-            print(f"⚠️ Skipping account profile configuration for '{name}': Username/Password not configured in env.")
+            print(f"⚠️ Skipping execution lane for '{name}': Login environment matrices not initialized.")
             continue
 
         print(f"\n🚀 Processing isolated tracking stream for student: {name}")
@@ -311,31 +382,37 @@ def run_pipeline() -> None:
                 notice_id = int(latest_notice['msgid'])
                 last_seen_id = tracking_history.get(name)
 
-                print(f"   ↳ State Check: Notice ID={notice_id} | Cursor History ID={last_seen_id}")
+                print(f"   ↳ State Check: Incoming Notice ID={notice_id} | Dispatched History ID={last_seen_id}")
 
                 if last_seen_id == notice_id:
-                    print(f"   🛑 Notice ID matches history logs for {name}. Already handled.")
+                    print(f"   🛑 Notice ID matches local historical records for {name}. Processing shunted.")
                 else:
-                    print(f"   ✨ New notification discovered for {name}! Extracting specific properties...")
+                    print(
+                        f"   ✨ New notification discovered for {name}! Extracting and rendering structural properties...")
                     time.sleep(1.5)
-                    event_details = scraper.fetch_notice_event_details(notice_id)
+                    event_details = scraper.fetch_notice_event_details('3636')
 
-                    # Formats alert explicitly reflecting current loop student
-                    formatted_alert = scraper.format_whatsapp_markdown(event_details)
-                    print(formatted_alert)
-                    # Dispatch payload out to Baileys Engine
+                    # 1. Parse complex HTML elements into clean text layouts and gather downloadable URLs
+                    formatted_alert, attachment_list = scraper.parse_and_format_content(event_details)
+
+                    # 2. Dispatch standard readable WhatsApp markdown text payload out first
                     scraper.broadcast_via_baileys(formatted_alert)
 
-                    # Update state data cursor isolated precisely to this loop kid name space
+                    # 3. If file links are isolated, parse and upload them over multi-part streaming right after
+                    if attachment_list:
+                        scraper.process_and_send_attachments(attachment_list)
+
+                    # Log the updated target cursor placement safely
                     save_student_processed_id(name, notice_id)
             else:
-                print(f"   ⚠️ Warning: No active layout feeds blocks discovered for {name}.")
+                print(f"   ⚠️ Warning: No valid notice structure frames returned for {name}.")
 
         except Exception as err:
-            print(f"   ❌ Automation flow failure encountered for {name}: {err}")
+            print(
+                f"   ❌ Operational exception breakdown encountered during tracking lifecycle execution flow for {name}: {err}")
         finally:
             scraper.logout()
-            time.sleep(2)  # Cooldown pacing window between distinct login sessions
+            time.sleep(2)  # Defensive cooldown window pacing execution runs across accounts
 
 
 # -------------------------------------------------------------------------

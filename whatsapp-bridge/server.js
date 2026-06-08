@@ -2,6 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 const P = require("pino");
 const qrcode = require("qrcode-terminal");
 const express = require("express");
+const multer = require("multer");
 
 const PORT = process.env.PORT || 3001;
 const GROUP_ID = process.env.GROUP_ID;
@@ -12,10 +13,27 @@ if (!GROUP_ID) {
     process.exit(1);
 }
 
+// Configure Multer to keep files strictly in system memory (RAM)
+// This protects your home server mini PC's NVMe drive write limits
+const storage = multer.memoryStorage();
+const upload = multer(storage);
+
 // =========================
 // GLOBAL SOCKET
 // =========================
 let sock;
+
+// Helper function to resolve target WhatsApp address routing
+function getTargetJid(to) {
+    if (to) {
+        let cleanTo = to.toString().replace(/[\s\-+]/g, "");
+        if (!cleanTo.endsWith("@s.whatsapp.net") && !cleanTo.endsWith("@g.us")) {
+            return `${cleanTo}@s.whatsapp.net`;
+        }
+        return cleanTo;
+    }
+    return GROUP_ID; // Fallback to default group configuration
+}
 
 // =========================
 // EXPRESS SERVER (START ONCE)
@@ -67,6 +85,37 @@ app.post("/send", async (req, res) => {
     } catch (err) {
         console.error("Send error:", err);
         res.status(500).json({ error: "failed to send" });
+    }
+});
+
+// ROUTE 2: New Attachment Endpoint (Processes Multi-part Streams)
+// Matches 'files={"file": ...}' payload out of your Python requests structure
+app.post("/media", upload.single("file"), async (req, res) => {
+    if (!sock) {
+        return res.status(500).json({ error: "WhatsApp not connected" });
+    }
+    if (!req.file) {
+        return res.status(400).json({ error: "No file payload detected in the request frame" });
+    }
+
+    // Optional query check if you want to explicitly redirect individual attachments
+    const target = getTargetJid(req.body.to);
+
+    try {
+        console.log(`📥 Received document attachment internally: ${req.file.originalname}`);
+
+        // Broadcast file media buffer smoothly using native Baileys protocol options
+        await sock.sendMessage(target, {
+            document: req.file.buffer,         // Raw memory stream buffer
+            mimetype: req.file.mimetype,       // Passed down automatically (e.g. application/pdf)
+            fileName: req.file.originalname,   // Label displayed inside WhatsApp interface chats
+        });
+
+        console.log(`✅ Attachment [${req.file.originalname}] pushed successfully to ${target}`);
+        res.json({ status: "media_sent", filename: req.file.originalname, to: target });
+    } catch (err) {
+        console.error("Failed to compile or relay media packet structure over WebSocket:", err);
+        res.status(500).json({ error: "failed to route document attachment" });
     }
 });
 
