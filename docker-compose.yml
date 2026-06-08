@@ -9,9 +9,9 @@ services:
     ports:
       - "3001:3001"
     env_file: .env
-#    volumes:
-#      # Maps your existing local auth folder into the container
-#      - ./auth:/app/auth
+    volumes:
+      # Maps your existing local auth folder into the container
+      - ./auth:/app/auth_info_baileys
 
   # Service B: The scheduled Python extraction client
   python-scraper:
@@ -21,6 +21,8 @@ services:
     env_file: .env
     depends_on:
       - whatsapp-bridge
+    environment:
+      - TZ=Asia/Kolkata
     volumes:
       # Maps a local folder to keep 'last_processed_msg.json' persistent
       # Left: Local host folder | Right: Scraper work directory inside container

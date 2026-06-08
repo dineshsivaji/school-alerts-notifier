@@ -30,14 +30,29 @@ app.get("/", (req, res) => {
 app.post("/send", async (req, res) => {
     const { message, to } = req.body;
 
-    const target = to || GROUP_ID;
-
     if (!message) {
         return res.status(400).json({ error: "message is required" });
     }
 
     if (!sock) {
         return res.status(500).json({ error: "WhatsApp not connected" });
+    }
+
+    // Determine target JID routing architecture
+    let target;
+    if (to) {
+        // Normalize: remove spaces, dashes, or plus signs if any exist
+        let cleanTo = to.toString().replace(/[\s\-+]/g, "");
+
+        // If it's a phone number without any suffix, append the individual chat domain
+        if (!cleanTo.endsWith("@s.whatsapp.net") && !cleanTo.endsWith("@g.us")) {
+            target = `${cleanTo}@s.whatsapp.net`;
+        } else {
+            target = cleanTo;
+        }
+    } else {
+        // Default fallback option straight to group configuration
+        target = GROUP_ID;
     }
 
     try {
@@ -84,13 +99,15 @@ async function startBot() {
         console.log(`⚠️ Could not fetch remote version, falling back to static override: ${version.join('.')}`);
     }
 
-    // FIX: Removed 'const' so makeWASocket binds straight to the global 'sock' reference
     sock = makeWASocket({
         version: version,
         auth: state,
         logger: P({ level: "error" }), // Suppresses verbose packet telemetry logs
         mobile: false,
         browser: ["Ubuntu", "Chrome", "20.0.04"],
+        // ADD THESE TWO CONFIGURATION LINES BELOW:
+        defaultQueryTimeoutMs: 0,   // Prevent 408 Time-out issues during high data synchronization
+        syncFullHistory: false,     // Skip heavy historical data downloads on startup
     });
 
     sock.ev.on("connection.update", (update) => {
@@ -119,6 +136,27 @@ async function startBot() {
             }
         }
     });
+
+    // Temporary listener to discover your real Group ID
+    //sock.ev.on("messages.upsert", async (chatUpdate) => {
+    //    try {
+    //        const msg = chatUpdate.messages[0];
+    //        if (!msg.message || msg.key.fromMe) return;
+    //
+    //        const chatId = msg.key.remoteJid;
+    //
+    //        // If the message comes from a group, it will end with @g.us
+    //        if (chatId.endsWith("@g.us")) {
+    //            console.log("\n==============================================");
+    //            console.log("👥 FOUND GROUP ID!");
+    //            console.log(`Group ID String: ${chatId}`);
+    //            console.log(`Text sent: ${msg.message.conversation || msg.message.extendedTextMessage?.text}`);
+    //            console.log("==============================================\n");
+    //        }
+    //    } catch (err) {
+    //        console.error("Discovery log error:", err);
+    //    }
+    //});
 
     sock.ev.on("creds.update", saveCreds);
 }
