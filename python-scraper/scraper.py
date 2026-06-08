@@ -390,7 +390,7 @@ def run_pipeline() -> None:
                     print(
                         f"   ✨ New notification discovered for {name}! Extracting and rendering structural properties...")
                     time.sleep(1.5)
-                    event_details = scraper.fetch_notice_event_details('3636')
+                    event_details = scraper.fetch_notice_event_details(notice_id)
 
                     # 1. Parse complex HTML elements into clean text layouts and gather downloadable URLs
                     formatted_alert, attachment_list = scraper.parse_and_format_content(event_details)
