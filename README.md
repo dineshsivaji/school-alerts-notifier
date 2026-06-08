@@ -171,6 +171,13 @@ curl -X POST http://localhost:3001/send \
   -d '{"to": "919xxxxxxxxx", "message": "Hello! This is a direct test message."}'
 
 ```
+Example `curl` to send attachment 
+
+```bash
+curl -X POST http://localhost:3001/media \
+  -F "file=@'/tmp/Document 4.pdf';type=application/pdf"
+```
+
 
 ---
 
