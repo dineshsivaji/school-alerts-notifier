@@ -51,19 +51,37 @@ school-alerts-notifier/
 
 ---
 
-## Configuration (`.env`)
+## Environment Configuration
 
-Create a `.env` file in the root directory of your project with the following keys:
+Configure your environment runtime settings inside a .env file in the root directory. You can structure your multiple student profiles using individual variables.
+Code snippet
+```
+# Network Gateway Infrastructure 
+BAILEYS_URL=http://localhost:3001/send
+POLL_INTERVAL=3600
 
-```env
-PORT=3001
-GROUP_ID=1XXXXXXXXXXXXXXXXX@g.us
-# Add any necessary Python scraper authentication variables below
-EDUMERGE_USERID=your_username
-EDUMERGE_PASSWORD=your_password
+# Student Account 1 Configuration Matrix
+STUDENT_1_NAME=Vennila
+EDUMERGE_USERID_1=your_student1_username
+EDUMERGE_PASSWORD_1=your_student1_password
 
+# Student Account 2 Configuration Matrix
+STUDENT_2_NAME=Surya
+EDUMERGE_USERID_2=your_student2_username
+EDUMERGE_PASSWORD_2=your_student2_password
 ```
 
+## Storage & Tracking Blueprint
+
+The application guarantees zero cookie footprint on disk. The only persistent record stored locally is the atomic state ledger inside data/last_processed_msg.json, which segregates message pointers dynamically by student name:
+JSON
+```
+{
+  "Vennila": 43552,
+  "Surya": 43549,
+  "_updated_at": 1780892243.0
+}
+```
 ---
 
 ## Getting Started & Initial Authentication
