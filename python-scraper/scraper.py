@@ -428,7 +428,10 @@ def run_pipeline() -> None:
 
                     # 3. If file links are isolated, parse and upload them over multi-part streaming right after
                     if attachment_list:
+                        print("Found attachments in the message.")
                         scraper.process_and_send_attachments(attachment_list)
+                    else:
+                        print("No attachments in the message.")
 
                     # Log the updated target cursor placement safely
                     save_student_processed_id(name, notice_id)
