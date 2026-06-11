@@ -219,18 +219,44 @@ class EdumergeScraper:
         return response.json()
 
     def parse_and_format_content(self, event_data: Dict[str, Any]) -> Tuple[str, List[str]]:
-        """Leverages native parser mechanics to return clean markdown text and download targets."""
+        """
+        Leverages native parser mechanics to process text bodies, while fallback-checking
+        structured metadata keys to guarantee file attachments are caught across both Edumerge layouts.
+        """
         title = event_data.get("mtitle", "New School Notice").strip()
         raw_body = event_data.get("msgbody", "")
         date_sent = event_data.get("content_date", {}).get("full_date", "Recently")
 
-        # Execute our structured parsing workflow
+        # --- PASS 1: Parse the main HTML text body ---
         parser = EdumergeHTMLParser()
         parser.feed(raw_body)
-        clean_body, attachments = parser.get_clean_payload()
+        clean_body, attachment_urls = parser.get_clean_payload()
 
-        # Strip out loose web anomalies if present
+        # Convert list to a set to eliminate duplicate assets automatically
+        final_attachments = set(attachment_urls)
+
+        # --- PASS 2: Metadata Fallback Collection Engine ---
+        # Strategy A: Check legacy singular flat attachment keys
+        single_link = event_data.get("attachment1_link") or event_data.get("attachment1_link_full_path")
+        if single_link and isinstance(single_link, str) and single_link.strip():
+            # Filter out broken placeholders or stringified null tokens
+            if "null" not in single_link.lower() and single_link.startswith("http"):
+                final_attachments.add(single_link.strip())
+
+        # Strategy B: Iterate over modern arrays if exposed by the server instance
+        array_links = event_data.get("attachments_array", [])
+        if isinstance(array_links, list):
+            for entry in array_links:
+                if isinstance(entry, dict):
+                    link = entry.get("attachment_link")
+                    if link and isinstance(link, str) and link.startswith("http"):
+                        final_attachments.add(link.strip())
+
+        # Clean formatting text anomalies
         clean_body = clean_body.replace("\u2022", "• ")
+
+        # Clean up common signature footers from the text to keep alerts crisp
+        clean_body = re.sub(r'(?i)Thanks\s*&\s*Regards.*', '', clean_body).strip()
 
         formatted_text = (
             f"🏫 *SCHOOL NOTICE ALERT ({self.display_name.upper()})*\n"
@@ -239,7 +265,9 @@ class EdumergeScraper:
             f"📌 *Subject:* {title}\n\n"
             f"{clean_body}"
         )
-        return formatted_text, attachments
+
+        # Return text payload alongside a clean, unique list of URLs
+        return formatted_text, list(final_attachments)
 
     @staticmethod
     def broadcast_via_baileys(message_text: str) -> None:
