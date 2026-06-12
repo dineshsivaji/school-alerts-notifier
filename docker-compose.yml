@@ -7,7 +7,7 @@ services:
     container_name: whatsapp-bridge
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001" # Accessible only from the host machine
     env_file: .env
     volumes:
       # Maps your existing local auth folder into the container
