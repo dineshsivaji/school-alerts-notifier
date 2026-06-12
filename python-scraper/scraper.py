@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 # Configuration Defaults
 BAILEYS_URL = os.getenv("BAILEYS_URL", "http://localhost:3001")
-BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "3600"))  # Default baseline: 1 hour
+BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "1800"))  # Default baseline: 30mins
 
 # Location of tracking file relative to execution path
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "last_processed_msg.json")
@@ -289,11 +289,14 @@ class EdumergeScraper:
 
         for url in attachment_urls:
             filename = url.split('/')[-1]
-            print(f"   📥 Downloading notice attachment from school portal: {filename}...")
-
+            print(f"   📥 Downloading notice attachment from school portal: {filename}, from {url}...")
+            download_headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                "Referer": "app.edumerge.com",
+            }
             try:
                 # Fetch asset stream keeping parameters coupled inside the current child's auth session
-                file_res = self.session.get(url, timeout=30)
+                file_res = requests.get(url, headers=download_headers, timeout=30)
                 if file_res.status_code == 200:
                     file_buffer = io.BytesIO(file_res.content)
                     print(f"   📤 Relaying attachment binary stream out to Baileys Multipart Engine...")
