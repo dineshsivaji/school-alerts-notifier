@@ -269,6 +269,95 @@ class EdumergeScraper:
         # Return text payload alongside a clean, unique list of URLs
         return formatted_text, list(final_attachments)
 
+    def fetch_latest_classroom_chats(self) -> List[Dict[str, Any]]:
+        """
+        Queries the Academics room manager to fetch all chat groups, filtering
+        for rooms that have received a message update matching today's date.
+        """
+        url = "https://app.edumerge.com/V2/react-native/newServer/Academics/Wrapper.php"
+        payload = {'reqType': (None, 'getRecentUsers')}
+
+        try:
+            response = self.session.post(url, files=payload, timeout=20)
+            groups = response.json().get('data', [])
+            if not groups or not isinstance(groups, list):
+                return []
+
+            # Dynamically calculate today's date in 'DD-MM-YYYY' matching the string structure
+            today_str = time.strftime('%d-%m-%Y')
+            active_today_groups = []
+
+            for group in groups:
+                g_id = group.get('groupID')
+                created_at_str = group.get('created_at')  # Expected: "17-06-2026 15:34:15"
+
+                if g_id and created_at_str:
+                    # Extract just the date component (first 10 characters: "17-06-2026")
+                    msg_date = created_at_str.split()[0] if " " in created_at_str else created_at_str[:10]
+
+                    if msg_date == today_str:
+                        active_today_groups.append(group)
+
+            # Sort chronologically by lastMessageTime so the newest messages are evaluated first
+            active_today_groups.sort(key=lambda x: x.get('lastMessageTime', ''), reverse=True)
+            return active_today_groups
+
+        except Exception as e:
+            print(f"   ❌ Exception fetching classroom group list for {self.display_name}: {e}")
+            return []
+
+    def fetch_room_messages(self, group_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Polls the chat frame logs inside a specific subject room container
+        to isolate the single newest message metadata entry object.
+        """
+        url = "https://app.edumerge.com/V2/react-native/newServer/Academics/chat_wrapper.php"
+        payload = {
+            'reqType': (None, 'getUserChats'),
+            'receiverID': (None, 'undefined'),
+            'currentPage': (None, '1'),
+            'recordsPerPage': (None, '10'),
+            'replyMessageId': (None, '0'),
+            'groupID': (None, group_id),
+            'isOwner': (None, '0'),
+            'filterString': (None, '')
+        }
+
+        try:
+            response = self.session.post(url, files=payload, timeout=20)
+            chats_matrix = response.json().get('data', {}).get('chatsArray', [])
+            if not chats_matrix or not isinstance(chats_matrix, list):
+                return None
+
+            # Flatten Edumerge's nested arrays: structural responses enclose internal chat tracks inside individual wrappers
+            first_row = chats_matrix[0]
+            if isinstance(first_row, list) and len(first_row) > 0:
+                return first_row[0]
+            elif isinstance(first_row, dict):
+                return first_row
+            return None
+        except Exception as e:
+            print(f"   ❌ Exception pulling text streams for group {group_id}: {e}")
+            return None
+
+    @staticmethod
+    def format_chat_message(student_name: str, group_name: str, chat_node: Dict[str, Any]) -> str:
+        """Compiles chat message records cleanly into consistent WhatsApp layout wrappers."""
+        subject = chat_node.get("subject", "Classroom Update").strip()
+        message = chat_node.get("message", "").strip()
+        teacher = chat_node.get("Fname", "Class Teacher").strip()
+        time_info = chat_node.get("publishedDateTime", "Recently")
+
+        return (
+            f"💬 *CLASSROOM CHAT ALERT ({student_name.upper()})*\n"
+            f"👥 *Group:* {group_name}\n"
+            f"👤 *From:* {teacher}\n"
+            f"📅 *Sent:* {time_info}\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📌 *Topic:* {subject}\n\n"
+            f"{message}"
+        )
+
     @staticmethod
     def broadcast_via_baileys(message_text: str) -> None:
         """Dispatches an HTTP JSON POST payload text stream to the standard text endpoint."""
@@ -364,17 +453,17 @@ def load_all_processed_states() -> Dict[str, Any]:
     return {}
 
 
-def save_student_processed_id(student_key: str, msg_id: int) -> None:
-    """Commits tracking status keys isolated precisely per child back to volume file storage."""
+def save_student_processed_id(student_key: str, state_payload: Dict[str, Any]) -> None:
+    """Commits complex structured tracking status blocks per child back to volume file storage."""
     current_states = load_all_processed_states()
-    current_states[student_key] = msg_id
+    current_states[student_key] = state_payload
     current_states["_updated_at"] = time.time()
 
     try:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         with open(STATE_FILE, "w") as f:
             json.dump(current_states, f, indent=2)
-        print(f"   -> Disk cursor tracking synchronized for [{student_key}] up to ID token: {msg_id}")
+        print(f"   -> Disk cursor matrix tracking synchronized safely for [{student_key}].")
     except IOError as e:
         print(f"❌ Failed to commit updated historical tracking criteria state parameters to disk: {e}")
 
@@ -383,7 +472,7 @@ def save_student_processed_id(student_key: str, msg_id: int) -> None:
 # CORE RUNTIME TRANSACTION EXECUTION LIFECYCLE
 # -------------------------------------------------------------------------
 def run_pipeline() -> None:
-    """Instantiates sequentially mapped execution loops across all active child accounts."""
+    """Instantiates sequentially mapped execution loops across all active child accounts for Notices and Chats."""
     print(f"\n🔄 [{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching automated account audit pass...")
 
     student_accounts = load_student_accounts()
@@ -408,45 +497,82 @@ def run_pipeline() -> None:
             scraper.initialize_dashboard_context()
             time.sleep(1.5)
 
+            # Extract child state dictionaries from persistent state store
+            student_state = tracking_history.get(name, {})
+            if not isinstance(student_state, dict):
+                student_state = {"notice_id": student_state, "chat_id": None}
+
+            # =========================================================================
+            # ENGINE PASS A: REGULAR SYSTEM PORTAL NOTICES
+            # =========================================================================
             latest_notice = scraper.fetch_latest_feed_notice()
             if latest_notice and latest_notice.get('msgid'):
                 notice_id = int(latest_notice['msgid'])
-                last_seen_id = tracking_history.get(name)
+                last_seen_notice = student_state.get("notice_id")
 
-                print(f"   ↳ State Check: Incoming Notice ID={notice_id} | Dispatched History ID={last_seen_id}")
-
-                if last_seen_id == notice_id:
-                    print(f"   🛑 Notice ID matches local historical records for {name}. Processing shunted.")
-                else:
-                    print(
-                        f"   ✨ New notification discovered for {name}! Extracting and rendering structural properties...")
-                    time.sleep(1.5)
+                if last_seen_notice != notice_id:
+                    print(f"   ✨ New global notice discovered ({notice_id})! Processing content...")
                     event_details = scraper.fetch_notice_event_details(notice_id)
-
-                    # 1. Parse complex HTML elements into clean text layouts and gather downloadable URLs
                     formatted_alert, attachment_list = scraper.parse_and_format_content(event_details)
-
-                    # 2. Dispatch standard readable WhatsApp markdown text payload out first
+                    # print("formatted_alert : ", formatted_alert)
                     scraper.broadcast_via_baileys(formatted_alert)
-
-                    # 3. If file links are isolated, parse and upload them over multi-part streaming right after
                     if attachment_list:
                         print("Found attachments in the message.")
                         scraper.process_and_send_attachments(attachment_list)
                     else:
                         print("No attachments in the message.")
 
-                    # Log the updated target cursor placement safely
-                    save_student_processed_id(name, notice_id)
+                    student_state["notice_id"] = notice_id
+                    save_student_processed_id(name, student_state)
+
+            time.sleep(1.5)
+
+            # =========================================================================
+            # ENGINE PASS B: CLASSROOM CHAT ROOMS & HOMEWORK (TODAY ONLY)
+            # =========================================================================
+            chat_groups = scraper.fetch_latest_classroom_chats()
+            if chat_groups:
+                print(f"   ✨ Found {len(chat_groups)} classroom group(s) updated today.")
+
+                for target_group in chat_groups:
+                    g_id = target_group.get("groupID")
+                    g_name = target_group.get("groupName", "Subject Room")
+
+                    chat_node = scraper.fetch_room_messages(g_id)
+                    if chat_node and chat_node.get("academicId"):
+                        academic_msg_id = int(chat_node["academicId"])
+
+                        # Use a group-specific sub-key to track seen messages cleanly
+                        # Example dictionary structure: {"notice_id": 3807, "chat_tracks": {"group_abc": 6998}}
+                        if "chat_tracks" not in student_state or not isinstance(student_state["chat_tracks"], dict):
+                            student_state["chat_tracks"] = {}
+
+                        last_seen_chat = student_state["chat_tracks"].get(g_id)
+
+                        print(
+                            f"   ↳ Chat Check [{g_name}]: ID={academic_msg_id} | Dispatched History ID={last_seen_chat}")
+
+                        if last_seen_chat != academic_msg_id:
+                            print(f"   🚀 Distributing fresh classroom update from [{g_name}] room...")
+                            formatted_chat = scraper.format_chat_message(name, g_name, chat_node)
+                            # print("formatted_chat: ", formatted_chat)
+                            # Dispatch out via Baileys gateway
+                            scraper.broadcast_via_baileys(formatted_chat)
+
+                            # Commit specific ID change to state tracking
+                            student_state["chat_tracks"][g_id] = academic_msg_id
+                            save_student_processed_id(name, student_state)
+                        else:
+                            print(f"   🛑 Chat message ID matches historical records for group {g_name}.")
             else:
-                print(f"   ⚠️ Warning: No valid notice structure frames returned for {name}.")
+                print(f"   ℹ️ No classroom chat updates detected for {name} today.")
 
         except Exception as err:
             print(
                 f"   ❌ Operational exception breakdown encountered during tracking lifecycle execution flow for {name}: {err}")
         finally:
             scraper.logout()
-            time.sleep(2)  # Defensive cooldown window pacing execution runs across accounts
+            time.sleep(2)  # Defensive pacing window across sequential student context profiles
 
 
 # -------------------------------------------------------------------------
