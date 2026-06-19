@@ -23,6 +23,15 @@ const upload = multer(storage);
 // =========================
 let sock;
 
+// Tracks live WhatsApp connection state for the /health endpoint.
+let connectionState = {
+    status: "connecting",        // "connecting" | "open" | "close"
+    lastConnectedAt: null,
+    lastDisconnectedAt: null,
+    lastError: null,
+    reconnectAttempts: 0,
+};
+
 // Helper function to resolve target WhatsApp address routing
 function getTargetJid(to) {
     if (to) {
@@ -43,6 +52,19 @@ app.use(express.json());
 
 app.get("/", (req, res) => {
     res.send("WhatsApp Bot Running ✅");
+});
+
+app.get("/health", (req, res) => {
+    const healthy = connectionState.status === "open" && !!sock;
+    res.status(healthy ? 200 : 503).json({
+        status: healthy ? "healthy" : "unhealthy",
+        whatsapp: connectionState.status,
+        lastConnectedAt: connectionState.lastConnectedAt,
+        lastDisconnectedAt: connectionState.lastDisconnectedAt,
+        lastError: connectionState.lastError,
+        reconnectAttempts: connectionState.reconnectAttempts,
+        uptimeSeconds: Math.floor(process.uptime()),
+    });
 });
 
 app.post("/send", async (req, res) => {
@@ -167,13 +189,22 @@ async function startBot() {
             qrcode.generate(qr, { small: true });
         }
 
+        if (connection) {
+            connectionState.status = connection;
+        }
+
         if (connection === "open") {
             console.log("✅ Success! Connected to WhatsApp Core Web Gateway Engine.");
             isStarting = false;
+            connectionState.lastConnectedAt = new Date().toISOString();
+            connectionState.lastError = null;
+            connectionState.reconnectAttempts = 0;
         }
 
         if (connection === "close") {
             isStarting = false;
+            connectionState.lastDisconnectedAt = new Date().toISOString();
+            connectionState.lastError = lastDisconnect?.error?.message || null;
 
             const shouldReconnect =
                 lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -181,6 +212,7 @@ async function startBot() {
             console.log("❌ Connection Closed. Reconnect Target Status:", shouldReconnect);
 
             if (shouldReconnect) {
+                connectionState.reconnectAttempts += 1;
                 setTimeout(startBot, 3000); // Safe delay step execution layout
             }
         }
