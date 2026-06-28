@@ -6,6 +6,7 @@ services:
     build: ./whatsapp-bridge
     container_name: whatsapp-bridge
     restart: unless-stopped
+    network_mode: host
     ports:
       - "127.0.0.1:3001:3001" # Accessible only from the host machine
     env_file: .env

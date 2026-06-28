@@ -13,6 +13,7 @@ RUN npm install --omit=dev
 
 # Copy the server source code
 COPY server.js .
+COPY nats_consumer.js .
 
 # Expose the internal port Baileys is listening on
 EXPOSE 3001

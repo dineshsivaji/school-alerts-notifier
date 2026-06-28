@@ -3,6 +3,7 @@ const P = require("pino");
 const qrcode = require("qrcode-terminal");
 const express = require("express");
 const multer = require("multer");
+const { startNatsConsumer } = require("./nats_consumer");
 
 const PORT = process.env.PORT || 3001;
 const GROUP_ID = process.env.GROUP_ID;
@@ -31,6 +32,9 @@ let connectionState = {
     lastError: null,
     reconnectAttempts: 0,
 };
+
+// Set once the NATS subscriber is bound — prevents re-binding on Baileys reconnects.
+let natsStarted = false;
 
 // Helper function to resolve target WhatsApp address routing
 function getTargetJid(to) {
@@ -147,6 +151,20 @@ app.listen(PORT, () => {
 });
 
 // =========================
+// NATS INGRESS (separate from the HTTP routes)
+// =========================
+// Used only by the NATS pull-consumer. /send and /media are untouched.
+async function sendTextViaNats(to, text) {
+    if (connectionState.status !== "open" || !sock) {
+        throw new Error("WhatsApp not connected");
+    }
+    const target = getTargetJid(to);
+    await sock.sendMessage(target, { text });
+    console.log("📤 [nats] Sent:", text);
+    console.log("To:", target);
+}
+
+// =========================
 // WHATSAPP BOT
 // =========================
 let isStarting = false;
@@ -199,6 +217,21 @@ async function startBot() {
             connectionState.lastConnectedAt = new Date().toISOString();
             connectionState.lastError = null;
             connectionState.reconnectAttempts = 0;
+
+            // Start the NATS pull-consumer once per process lifetime.
+            // Baileys reconnects don't need a new subscriber — the existing
+            // one stays bound to the durable JetStream consumer and picks
+            // up where it left off.
+            if (!natsStarted) {
+                natsStarted = true;
+                startNatsConsumer({
+                    sendMessage: sendTextViaNats,
+                    isReady: () => connectionState.status === "open" && !!sock,
+                }).catch((err) => {
+                    console.error("❌ NATS consumer crashed:", err);
+                    // Don't kill the HTTP server — /send still works.
+                });
+            }
         }
 
         if (connection === "close") {
@@ -217,27 +250,6 @@ async function startBot() {
             }
         }
     });
-
-    // Temporary listener to discover your real Group ID
-    //sock.ev.on("messages.upsert", async (chatUpdate) => {
-    //    try {
-    //        const msg = chatUpdate.messages[0];
-    //        if (!msg.message || msg.key.fromMe) return;
-    //
-    //        const chatId = msg.key.remoteJid;
-    //
-    //        // If the message comes from a group, it will end with @g.us
-    //        if (chatId.endsWith("@g.us")) {
-    //            console.log("\n==============================================");
-    //            console.log("👥 FOUND GROUP ID!");
-    //            console.log(`Group ID String: ${chatId}`);
-    //            console.log(`Text sent: ${msg.message.conversation || msg.message.extendedTextMessage?.text}`);
-    //            console.log("==============================================\n");
-    //        }
-    //    } catch (err) {
-    //        console.error("Discovery log error:", err);
-    //    }
-    //});
 
     sock.ev.on("creds.update", saveCreds);
 }
