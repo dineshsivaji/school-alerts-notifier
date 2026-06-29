@@ -1,27 +1,13 @@
-version: '3.8'
 
 services:
-  # Service A: The persistent Node.js WhatsApp daemon
-  whatsapp-bridge:
-    build: ./whatsapp-bridge
-    container_name: whatsapp-bridge
-    restart: unless-stopped
-    network_mode: host
-    ports:
-      - "127.0.0.1:3001:3001" # Accessible only from the host machine
-    env_file: .env
-    volumes:
-      # Maps your existing local auth folder into the container
-      - ./auth:/app/auth_info_baileys
-
-  # Service B: The scheduled Python extraction client
   python-scraper:
-    build: ./python-scraper
+    build: .
     container_name: python-scraper
     restart: unless-stopped
+    #network_mode: host
     env_file: .env
-    depends_on:
-      - whatsapp-bridge
+    #depends_on:
+    #  - whatsapp-bridge
     environment:
       - TZ=Asia/Kolkata
     volumes:
