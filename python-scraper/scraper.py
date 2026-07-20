@@ -2,19 +2,58 @@ import os
 import json
 import time
 import random
-import io
 import re
 import html
+import asyncio
+import mimetypes
 from html.parser import HTMLParser
 import requests
+import nats
 from typing import Optional, Dict, Any, List, Tuple
 
 # Configuration Defaults
-BAILEYS_URL = os.getenv("BAILEYS_URL", "http://localhost:3001")
 BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "1800"))  # Default baseline: 30mins
+
+# NATS — the scraper is a pure producer: it publishes alerts to NATS and the
+# whatsapp-server-api consumer delivers them. Text and media use separate subjects.
+NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+NATS_TEXT_SUBJECT = os.getenv("NATS_SUBJECT", "notify.whatsapp")
+NATS_MEDIA_SUBJECT = os.getenv("NATS_MEDIA_SUBJECT", "notify.whatsapp.media")
+NATS_PUBLISH_TIMEOUT_SEC = int(os.getenv("NATS_PUBLISH_TIMEOUT_SEC", "10"))
+# Recipient forwarded verbatim by the gateway; empty → gateway's GROUP_ID default.
+WHATSAPP_TO = os.getenv("WHATSAPP_TO", "")
 
 # Location of tracking file relative to execution path
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "last_processed_msg.json")
+
+
+# -------------------------------------------------------------------------
+# NATS PUBLISH HELPERS (sync wrappers over the async nats-py client)
+# -------------------------------------------------------------------------
+async def _publish_async(subject: str, data: bytes, headers: Optional[Dict[str, str]]) -> None:
+    nc = await nats.connect(NATS_URL, name="school-scraper", connect_timeout=10)
+    try:
+        js = nc.jetstream()
+        await asyncio.wait_for(
+            js.publish(subject, data, headers=headers),
+            timeout=NATS_PUBLISH_TIMEOUT_SEC,
+        )
+    finally:
+        await nc.drain()
+
+
+def publish_nats(subject: str, data: bytes, headers: Optional[Dict[str, str]] = None) -> bool:
+    """
+    Publish one message to NATS JetStream. Connects fresh each call — fine for
+    this low-volume scraper (a few messages per 30-min cycle). Returns True on a
+    confirmed JetStream ack, False otherwise (logged, non-fatal).
+    """
+    try:
+        asyncio.run(_publish_async(subject, data, headers or None))
+        return True
+    except Exception as e:
+        print(f"   ❌ NATS publish to {subject} failed: {e}")
+        return False
 
 
 # -------------------------------------------------------------------------
@@ -359,25 +398,17 @@ class EdumergeScraper:
         )
 
     @staticmethod
-    def broadcast_via_baileys(message_text: str) -> None:
-        """Dispatches an HTTP JSON POST payload text stream to the standard text endpoint."""
-        url = f"{BAILEYS_URL}/send"
-        payload = {"message": message_text}
-        try:
-            res = requests.post(url, json=payload, timeout=10)
-            if res.status_code == 200:
-                print("   ✅ Success! Text notice broadcasted successfully via Baileys.")
-            else:
-                print(f"   ⚠️ Text gateway rejected transmission payload. Status: {res.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"   ❌ Communication pipeline failure reaching standard Baileys text endpoint: {e}")
+    def broadcast_text(message_text: str, dedup_id: Optional[str] = None) -> None:
+        """Publish a text alert to NATS (notify.whatsapp). The gateway consumer delivers it."""
+        payload = json.dumps({"to": WHATSAPP_TO, "text": message_text}).encode()
+        headers = {"Nats-Msg-Id": f"text-{dedup_id}"} if dedup_id else None
+        if publish_nats(NATS_TEXT_SUBJECT, payload, headers):
+            print("   ✅ Text alert published to NATS.")
 
-    def process_and_send_attachments(self, attachment_urls: List[str]) -> None:
-        """Downloads files securely into memory RAM buffers and pipes them to the Baileys multi-part engine."""
-        media_url = f"{BAILEYS_URL}/media"
-
+    def process_and_send_attachments(self, attachment_urls: List[str], dedup_prefix: str = "") -> None:
+        """Download each attachment into memory and publish it to NATS (notify.whatsapp.media)."""
         for url in attachment_urls:
-            filename = url.split('/')[-1]
+            filename = url.split('/')[-1] or "attachment"
             print(f"   📥 Downloading notice attachment from school portal: {filename}, from {url}...")
             download_headers = {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -386,22 +417,26 @@ class EdumergeScraper:
             try:
                 # Fetch asset stream keeping parameters coupled inside the current child's auth session
                 file_res = requests.get(url, headers=download_headers, timeout=30)
-                if file_res.status_code == 200:
-                    file_buffer = io.BytesIO(file_res.content)
-                    print(f"   📤 Relaying attachment binary stream out to Baileys Multipart Engine...")
-
-                    # Prepare multipart form payload targeting the multer endpoint configuration
-                    files = {'file': (filename, file_buffer, 'application/pdf')}
-                    media_res = requests.post(media_url, files=files, timeout=20)
-
-                    if media_res.status_code == 200:
-                        print(f"   ✅ Attachment [{filename}] successfully posted to family group channel.")
-                    else:
-                        print(f"   ⚠️ Media gateway rejected file packet framework. Status: {media_res.status_code}")
-                else:
+                if file_res.status_code != 200:
                     print(f"   ⚠️ Attachment asset download returned failure status code: {file_res.status_code}")
+                    continue
+
+                content = file_res.content
+                # Prefer the server's Content-Type, else guess from the filename.
+                ctype = (file_res.headers.get("Content-Type") or "").split(";")[0].strip()
+                mimetype = ctype or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+                headers = {
+                    "To": WHATSAPP_TO,
+                    "X-Filename": filename,
+                    "X-Mimetype": mimetype,
+                    "Nats-Msg-Id": f"media-{dedup_prefix}-{filename}",
+                }
+                print(f"   📤 Publishing attachment to NATS ({len(content)} bytes, {mimetype})...")
+                if publish_nats(NATS_MEDIA_SUBJECT, content, headers):
+                    print(f"   ✅ Attachment [{filename}] published to NATS media subject.")
             except Exception as e:
-                print(f"   ❌ Failed to successfully execute automated attachment routing pipeline loop: {e}")
+                print(f"   ❌ Failed to download/publish attachment: {e}")
 
     def logout(self) -> None:
         """Step 6: Execute modular multipart disconnection cleanup sequence."""
@@ -515,10 +550,10 @@ def run_pipeline() -> None:
                     event_details = scraper.fetch_notice_event_details(notice_id)
                     formatted_alert, attachment_list = scraper.parse_and_format_content(event_details)
                     # print("formatted_alert : ", formatted_alert)
-                    scraper.broadcast_via_baileys(formatted_alert)
+                    scraper.broadcast_text(formatted_alert, dedup_id=f"notice-{notice_id}")
                     if attachment_list:
                         print("Found attachments in the message.")
-                        scraper.process_and_send_attachments(attachment_list)
+                        scraper.process_and_send_attachments(attachment_list, dedup_prefix=str(notice_id))
                     else:
                         print("No attachments in the message.")
 
@@ -556,8 +591,8 @@ def run_pipeline() -> None:
                             print(f"   🚀 Distributing fresh classroom update from [{g_name}] room...")
                             formatted_chat = scraper.format_chat_message(name, g_name, chat_node)
                             # print("formatted_chat: ", formatted_chat)
-                            # Dispatch out via Baileys gateway
-                            scraper.broadcast_via_baileys(formatted_chat)
+                            # Publish out via NATS (gateway consumer delivers)
+                            scraper.broadcast_text(formatted_chat, dedup_id=f"chat-{g_id}-{academic_msg_id}")
 
                             # Commit specific ID change to state tracking
                             student_state["chat_tracks"][g_id] = academic_msg_id

@@ -4,15 +4,17 @@ services:
     build: .
     container_name: python-scraper
     restart: unless-stopped
-    #network_mode: host
     env_file: .env
-    #depends_on:
-    #  - whatsapp-bridge
     environment:
       - TZ=Asia/Kolkata
+      - NATS_URL=nats://nats:4222   # reached by name on the shared mini-net
     volumes:
       # Maps a local folder to keep 'last_processed_msg.json' persistent
       # Left: Local host folder | Right: Scraper work directory inside container
       - ./scraper-data:/app/data
+    networks:
+      - mini-net
 
-# We removed the global named volumes block entirely since we are using local bind mounts!
+networks:
+  mini-net:
+    external: true
