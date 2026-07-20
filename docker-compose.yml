@@ -1,7 +1,7 @@
 
 services:
   python-scraper:
-    build: .
+    build: python-scraper/.
     container_name: python-scraper
     restart: unless-stopped
     env_file: .env
