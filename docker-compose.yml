@@ -15,4 +15,11 @@ services:
       # Left: Local host folder | Right: Scraper work directory inside container
       - ./scraper-data:/app/data
 
+    networks:                  
+      - mini-net                
+
+networks:                      
+  mini-net:                     
+    external: true               
+
 # We removed the global named volumes block entirely since we are using local bind mounts!
