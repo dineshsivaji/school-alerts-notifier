@@ -14,6 +14,12 @@ from typing import Optional, Dict, Any, List, Tuple
 # Configuration Defaults
 BASE_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL", "1800"))  # Default baseline: 30mins
 
+# During the school's peak notice-posting window, poll more frequently so
+# same-day alerts (e.g. exam schedule changes) reach parents sooner.
+PEAK_INTERVAL_SECONDS = int(os.getenv("PEAK_POLL_INTERVAL", "300"))  # 5 mins
+PEAK_START_HOUR = int(os.getenv("PEAK_START_HOUR", "14"))  # 2 PM
+PEAK_END_HOUR = int(os.getenv("PEAK_END_HOUR", "18"))      # 6 PM (exclusive)
+
 # NATS — the scraper is a pure producer: it publishes alerts to NATS and the
 # whatsapp-server-api consumer delivers them. Text and media use separate subjects.
 NATS_URL = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
@@ -644,15 +650,27 @@ if __name__ == "__main__":
 
         run_pipeline()
 
-        # Add variable humanized Jitter matrix (Adds between -10 mins and +15 mins to baseline)
-        jitter = random.randint(-600, 900)
-        next_sleep_interval = BASE_INTERVAL_SECONDS + jitter
+        # Tighter cadence during the school's peak notice-posting window
+        # (2PM-6PM by default), the normal jittered baseline otherwise.
+        post_run_hour = time.localtime().tm_hour
+        in_peak_window = PEAK_START_HOUR <= post_run_hour < PEAK_END_HOUR
+
+        if in_peak_window:
+            base_interval = PEAK_INTERVAL_SECONDS
+            jitter = random.randint(-60, 90)  # small humanized variance around 5 mins
+        else:
+            base_interval = BASE_INTERVAL_SECONDS
+            # Add variable humanized Jitter matrix (Adds between -10 mins and +15 mins to baseline)
+            jitter = random.randint(-600, 900)
+
+        next_sleep_interval = max(base_interval + jitter, 60)  # never sleep less than 1 minute
 
         sleep_minutes_metric = round(next_sleep_interval / 60, 1)
         target_wake_timestamp = time.strftime('%I:%M:%S %p', time.localtime(time.time() + next_sleep_interval))
 
+        window_label = "peak 2PM-6PM" if in_peak_window else "baseline"
         print(
-            f"💤 Variable sleep window activated: Sleeping for {sleep_minutes_metric} minutes ({next_sleep_interval}s).")
+            f"💤 Variable sleep window activated [{window_label}]: Sleeping for {sleep_minutes_metric} minutes ({next_sleep_interval}s).")
         print(f"⏰ Next evaluation pass is scheduled to execute at approx: {target_wake_timestamp}")
 
         time.sleep(next_sleep_interval)
