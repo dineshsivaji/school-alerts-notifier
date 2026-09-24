@@ -550,10 +550,17 @@ def run_pipeline() -> None:
                     event_details = scraper.fetch_notice_event_details(notice_id)
                     formatted_alert, attachment_list = scraper.parse_and_format_content(event_details)
                     # print("formatted_alert : ", formatted_alert)
-                    scraper.broadcast_text(formatted_alert, dedup_id=f"notice-{notice_id}")
+                    # NOTE: dedup_id is scoped to this student (name + notice_id), not just
+                    # notice_id. The same school-wide notice is legitimately re-sent once
+                    # per linked student account (e.g. to different WhatsApp groups); a
+                    # dedup_id shared across students caused JetStream to silently drop
+                    # every publish after the first one for the same notice_id.
+                    scraper.broadcast_text(formatted_alert, dedup_id=f"notice-{name}-{notice_id}")
                     if attachment_list:
                         print("Found attachments in the message.")
-                        scraper.process_and_send_attachments(attachment_list, dedup_prefix=str(notice_id))
+                        scraper.process_and_send_attachments(
+                            attachment_list, dedup_prefix=f"{name}-{notice_id}"
+                        )
                     else:
                         print("No attachments in the message.")
 
@@ -649,3 +656,4 @@ if __name__ == "__main__":
         print(f"⏰ Next evaluation pass is scheduled to execute at approx: {target_wake_timestamp}")
 
         time.sleep(next_sleep_interval)
+

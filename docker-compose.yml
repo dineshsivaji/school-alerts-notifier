@@ -10,6 +10,7 @@ services:
     #  - whatsapp-bridge
     environment:
       - TZ=Asia/Kolkata
+      - NATS_URL=nats://nats:4222
     volumes:
       # Maps a local folder to keep 'last_processed_msg.json' persistent
       # Left: Local host folder | Right: Scraper work directory inside container
