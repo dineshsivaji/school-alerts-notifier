@@ -1,13 +1,11 @@
 
 services:
   python-scraper:
-    build: .
+    build: python-scraper/
     container_name: python-scraper
     restart: unless-stopped
     #network_mode: host
     env_file: .env
-    #depends_on:
-    #  - whatsapp-bridge
     environment:
       - TZ=Asia/Kolkata
       - NATS_URL=nats://nats:4222
